@@ -1,0 +1,67 @@
+services:
+  app:
+    image: {{baseImage}}
+    container_name: {{containerName}}
+{{#startCommand}}
+    command: {{{startCommand}}}
+{{/startCommand}}
+    ports:
+{{#ports}}
+      - "{{.}}"
+{{/ports}}
+{{^ports}}
+      - "{{hostPort}}:{{containerPort}}"
+{{/ports}}
+    volumes:
+{{#volumes}}
+      - {{hostPath}}:{{containerPath}}{{options}}
+{{/volumes}}
+    environment:
+{{#environment}}
+      - {{key}}={{{value}}}
+{{/environment}}
+{{^environment}}
+      - APP_PORT={{hostPort}}
+      - CONTAINER_PORT={{containerPort}}{{/environment}}
+{{#workingDir}}
+    working_dir: {{workingDir}}
+{{/workingDir}}
+    networks:
+      - {{networkName}}
+{{#databaseNetwork}}
+      - {{databaseNetwork}}
+{{/databaseNetwork}}
+    restart: unless-stopped
+{{#ttyEnabled}}
+    tty: true
+{{/ttyEnabled}}
+{{#stdinOpen}}
+    stdin_open: true
+{{/stdinOpen}}
+{{#dependsOn}}
+    depends_on:
+{{#dependsOnList}}
+      - {{.}}
+{{/dependsOnList}}
+{{/dependsOn}}
+{{#healthCheck}}
+    healthcheck:
+      test: {{{healthCheckTest}}}
+      interval: {{healthCheckInterval}}
+      timeout: {{healthCheckTimeout}}
+      retries: {{healthCheckRetries}}
+      start_period: {{healthCheckStartPeriod}}
+{{/healthCheck}}
+{{#additionalServices}}
+{{{.}}}
+{{/additionalServices}}
+networks:
+  {{networkName}}:
+    driver: bridge
+{{#databaseNetworkDef}}
+{{{databaseNetworkDef}}}
+{{/databaseNetworkDef}}
+{{#additionalVolumes}}
+{{{.}}}
+{{/additionalVolumes}}
+

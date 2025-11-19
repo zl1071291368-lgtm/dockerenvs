@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>共享MySQL数据库管理</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f5f5f5;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .navbar {
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        .card {
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+            margin-bottom: 20px;
+        }
+        .info-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .verification-result {
+            font-family: 'Courier New', monospace;
+            white-space: pre-line;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #007bff;
+        }
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1055;
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-online {
+            background-color: #28a745;
+            box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+        }
+        .status-offline {
+            background-color: #dc3545;
+        }
+        .status-unknown {
+            background-color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="index.html">
+                <i class="bi bi-arrow-left"></i> 返回
+            </a>
+            <span class="navbar-text text-white">
+                <i class="bi bi-database"></i> 共享MySQL数据库管理
+            </span>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <!-- 信息卡片 -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card info-card">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-info-circle"></i> 共享数据库说明
+                        </h5>
+                        <p class="card-text mb-0">
+                            共享MySQL数据库是一个全局共享的数据库容器，供所有实验环境使用。
+                            它独立于各个环境，生命周期由系统单独管理。删除环境时，共享数据库的volume不会被删除。
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 状态卡片 -->
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-subtitle mb-2 text-muted">容器名称</h6>
+                        <h5 class="card-title" id="containerName">-</h5>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-subtitle mb-2 text-muted">网络名称</h6>
+                        <h5 class="card-title" id="networkName">-</h5>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-subtitle mb-2 text-muted">Volume名称</h6>
+                        <h5 class="card-title" id="volumeName">-</h5>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 状态验证 -->
+        <div class="card mb-4">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-check-circle"></i> 状态验证</h5>
+                <button class="btn btn-sm btn-outline-primary" onclick="loadStatus()">
+                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="loading" class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">加载中...</span>
+                    </div>
+                </div>
+                <div id="verificationResult" class="verification-result" style="display: none;"></div>
+            </div>
+        </div>
+
+        <!-- 操作面板 -->
+        <div class="card">
+            <div class="card-header bg-white">
+                <h5 class="mb-0"><i class="bi bi-gear"></i> 操作</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-success w-100" onclick="ensureExists()">
+                            <i class="bi bi-play-circle"></i> 确保运行
+                        </button>
+                        <small class="text-muted d-block mt-2">创建或启动共享MySQL容器</small>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-warning w-100" onclick="stopMysql()">
+                            <i class="bi bi-stop-circle"></i> 停止
+                        </button>
+                        <small class="text-muted d-block mt-2">停止容器（不删除数据）</small>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-danger w-100" onclick="destroyMysql()">
+                            <i class="bi bi-trash"></i> 完全删除
+                        </button>
+                        <small class="text-muted d-block mt-2">删除容器和所有数据（危险操作）</small>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-info w-100" onclick="loadStatus()">
+                            <i class="bi bi-arrow-clockwise"></i> 刷新状态
+                        </button>
+                        <small class="text-muted d-block mt-2">重新加载状态信息</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 创建逻辑说明 -->
+        <div class="card mt-4">
+            <div class="card-header bg-white">
+                <h5 class="mb-0"><i class="bi bi-book"></i> 创建逻辑说明</h5>
+            </div>
+            <div class="card-body">
+                <h6>1. 检查阶段</h6>
+                <p>系统首先检查共享MySQL容器是否存在：</p>
+                <ul>
+                    <li>如果容器不存在 → 进入创建流程</li>
+                    <li>如果容器存在但已停止 → 启动容器</li>
+                    <li>如果容器正在运行 → 验证MySQL服务是否就绪</li>
+                </ul>
+
+                <h6 class="mt-4">2. 创建流程</h6>
+                <p>当需要创建新容器时，系统执行以下步骤：</p>
+                <ol>
+                    <li><strong>创建网络</strong>：创建名为 <code>shared-mysql-net</code> 的Docker网络（如果不存在）</li>
+                    <li><strong>创建容器</strong>：使用 <code>docker run</code> 命令创建独立容器
+                        <ul>
+                            <li>容器名称：<code>shared-mysql</code></li>
+                            <li>镜像：<code>mysql:8.0</code></li>
+                            <li>网络：连接到 <code>shared-mysql-net</code></li>
+                            <li>Volume：<code>shared-mysql-data:/var/lib/mysql</code>（持久化数据）</li>
+                            <li>重启策略：<code>unless-stopped</code>（自动重启）</li>
+                            <li>不映射端口到主机（通过Docker网络访问）</li>
+                        </ul>
+                    </li>
+                    <li><strong>等待就绪</strong>：等待MySQL服务启动完成（最多30秒）</li>
+                </ol>
+
+                <h6 class="mt-4">3. 配置特点</h6>
+                <ul>
+                    <li><strong>独立管理</strong>：容器不在任何docker-compose项目中，生命周期独立</li>
+                    <li><strong>数据持久化</strong>：使用命名volume <code>shared-mysql-data</code> 存储数据</li>
+                    <li><strong>网络隔离</strong>：使用专用网络，应用容器通过Docker网络连接</li>
+                    <li><strong>自动重启</strong>：容器异常退出时自动重启</li>
+                    <li><strong>字符集</strong>：UTF8MB4，支持emoji等特殊字符</li>
+                </ul>
+
+                <h6 class="mt-4">4. 触发时机与生命周期管理</h6>
+                <p><strong>重要变更</strong>：共享MySQL容器的生命周期现在独立管理，不再由环境创建流程自动控制。</p>
+                <ul>
+                    <li><strong>环境创建时</strong>：
+                        <ul>
+                            <li>只检查数据库容器是否可用（<code>checkSharedMysqlAvailable()</code>）</li>
+                            <li>如果容器不存在，会返回明确的错误提示，引导用户手动创建</li>
+                            <li>如果配置了 <code>shared.mysql.auto-create=true</code>，会在检查失败时尝试自动创建（不推荐）</li>
+                        </ul>
+                    </li>
+                    <li><strong>手动管理</strong>：
+                        <ul>
+                            <li>通过本页面"确保运行"按钮创建或启动</li>
+                            <li>通过 API 调用 <code>POST /api/shared-mysql/ensure</code></li>
+                        </ul>
+                    </li>
+                    <li><strong>数据库Schema</strong>：
+                        <ul>
+                            <li>具体的数据库（如 <code>test_db</code>）仍然会在环境创建时自动创建</li>
+                            <li>这是环境相关的数据，可以自动管理</li>
+                        </ul>
+                    </li>
+                </ul>
+
+                <div class="alert alert-warning mt-4">
+                    <i class="bi bi-exclamation-triangle"></i> <strong>生命周期管理</strong>：
+                    <ul class="mb-0 mt-2">
+                        <li>共享数据库容器应该通过本页面或API独立管理，不建议在环境创建时自动创建</li>
+                        <li>默认配置 <code>shared.mysql.auto-create=false</code>，需要手动创建数据库容器</li>
+                        <li>删除普通环境时，共享数据库的volume不会被删除（独立管理）</li>
+                        <li>只有通过"完全删除"操作才会删除共享数据库的所有数据</li>
+                    </ul>
+                </div>
+                
+                <div class="alert alert-info mt-3">
+                    <i class="bi bi-info-circle"></i> <strong>配置说明</strong>：
+                    如需启用自动创建（不推荐），可在 <code>application.yml</code> 中设置：
+                    <pre class="bg-light p-2 mt-2"><code>shared:
+  mysql:
+    auto-create: true</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast-container">
+        <div id="toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header">
+                <strong class="me-auto">通知</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastBody"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API_BASE = '/api/shared-mysql';
+        let toast = null;
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            toast = new bootstrap.Toast(document.getElementById('toast'));
+            loadStatus();
+            // 每30秒自动刷新
+            setInterval(loadStatus, 30000);
+        });
+
+        // 加载状态
+        async function loadStatus() {
+            const loading = document.getElementById('loading');
+            const resultDiv = document.getElementById('verificationResult');
+            
+            loading.style.display = 'block';
+            resultDiv.style.display = 'none';
+
+            try {
+                const response = await fetch(`${API_BASE}/status`);
+                const result = await response.json();
+                
+                loading.style.display = 'none';
+                resultDiv.style.display = 'block';
+
+                if (result.success) {
+                    const data = result.data;
+                    document.getElementById('containerName').textContent = data.containerName || '-';
+                    document.getElementById('networkName').textContent = data.networkName || '-';
+                    document.getElementById('volumeName').textContent = data.volumeName || '-';
+                    document.getElementById('verificationResult').textContent = data.verification || '无验证信息';
+                } else {
+                    document.getElementById('verificationResult').textContent = '获取状态失败: ' + result.message;
+                    showToast('获取状态失败: ' + result.message, 'danger');
+                }
+            } catch (error) {
+                loading.style.display = 'none';
+                resultDiv.style.display = 'block';
+                document.getElementById('verificationResult').textContent = '加载失败: ' + error.message;
+                showToast('加载失败: ' + error.message, 'danger');
+            }
+        }
+
+        // 确保运行
+        async function ensureExists() {
+            if (!confirm('确定要确保共享MySQL运行吗？如果不存在将创建新容器。')) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/ensure`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showToast('操作成功: ' + result.message, 'success');
+                    setTimeout(loadStatus, 2000);
+                } else {
+                    showToast('操作失败: ' + result.message, 'danger');
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message, 'danger');
+            }
+        }
+
+        // 停止
+        async function stopMysql() {
+            if (!confirm('确定要停止共享MySQL容器吗？数据不会丢失。')) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/stop`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showToast('操作成功: ' + result.message, 'success');
+                    setTimeout(loadStatus, 2000);
+                } else {
+                    showToast('操作失败: ' + result.message, 'danger');
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message, 'danger');
+            }
+        }
+
+        // 完全删除
+        async function destroyMysql() {
+            if (!confirm('⚠️ 警告：此操作将删除共享MySQL容器和所有数据！\n\n此操作不可恢复，确定要继续吗？')) {
+                return;
+            }
+            if (!confirm('请再次确认：真的要删除所有数据吗？')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showToast('操作成功: ' + result.message, 'success');
+                    setTimeout(loadStatus, 2000);
+                } else {
+                    showToast('操作失败: ' + result.message, 'danger');
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message, 'danger');
+            }
+        }
+
+        // 显示Toast
+        function showToast(message, type = 'info') {
+            const toastBody = document.getElementById('toastBody');
+            const toastHeader = document.querySelector('#toast .toast-header');
+            
+            toastBody.textContent = message;
+            
+            toastHeader.className = 'toast-header';
+            if (type === 'success') {
+                toastHeader.classList.add('bg-success', 'text-white');
+            } else if (type === 'danger') {
+                toastHeader.classList.add('bg-danger', 'text-white');
+            } else if (type === 'info') {
+                toastHeader.classList.add('bg-info', 'text-white');
+            }
+            
+            toast.show();
+        }
+    </script>
+</body>
+</html>
+

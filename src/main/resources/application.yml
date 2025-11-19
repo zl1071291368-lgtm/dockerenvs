@@ -1,0 +1,52 @@
+﻿spring:
+  application:
+    name: DockerEnvs
+  
+  # 数据源配
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/virtual_env?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+  
+  # Jackson 配置
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+
+# MyBatis Plus 配置
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: org.dockerenvs.entity
+
+# 虚拟环境框架配置
+env:
+  # 服务器主机地址
+  server:
+    host: localhost
+  # 实验程序包存储路径
+  apps:
+    base-path: D:/Code/Java/DockerEnvs/DockerEnvs/apps
+  # 用户环境目录路径
+  user-envs:
+    base-path: D:/Code/Java/DockerEnvs/DockerEnvs/user_envs
+  # 端口分配范围
+  port:
+    min: 18000
+    max: 19999
+
+# 共享MySQL配置
+shared:
+  mysql:
+    # MySQL root密码
+    root:
+      password: 123456
+    # 是否允许在创建环境时自动创建数据库容器（默认false，需要手动管理）
+    auto-create: false
+
+# 服务器端口
+server:
+  port: 8080

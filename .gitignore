@@ -1,0 +1,32 @@
+# Maven build outputs
+target/
+**/target/
+
+# IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# VSCode
+.vscode/
+
+# Experimental app packages (large files)
+apps/
+*.jar
+*.war
+*.zip
+*.7z
+*.tar.gz
+
+# Generated runtime environments
+user_envs/
+logs/
+*.log
+*.class
+
+# Node (if future FE)
+node_modules/
+
+# Maven wrapper (keep wrapper itself, ignore download cache)
+.mvn/wrapper/
