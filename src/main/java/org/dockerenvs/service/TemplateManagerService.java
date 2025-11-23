@@ -129,7 +129,14 @@ public class TemplateManagerService {
         // 环境变量
         Map<String, String> env = strategy.getDefaultEnvironment(metadata, hostPort);
         if (metadata.getEnv() != null) {
-            env.putAll(metadata.getEnv());
+            // 安全地合并环境变量，确保所有值都是字符串
+            // 即使 ExperimentMetadata.env 声明为 Map<String, String>，
+            // Jackson 在反序列化时如果遇到对象值，可能会将其反序列化为 Map 或其他类型
+            @SuppressWarnings("unchecked")
+            Map<String, Object> envMap = (Map<String, Object>) (Map<?, ?>) metadata.getEnv();
+            for (Map.Entry<String, Object> entry : envMap.entrySet()) {
+                env.put(entry.getKey(), convertEnvValueToString(entry.getValue(), entry.getKey()));
+            }
         }
         
         // 数据库环境变量
@@ -141,13 +148,21 @@ public class TemplateManagerService {
             }
         }
         
+        // 构建环境变量列表，确保所有值都是字符串（双重保险）
         List<Map<String, String>> envList = env.entrySet().stream().map(e -> {
             Map<String, String> envVar = new HashMap<>();
             envVar.put("key", e.getKey());
-            envVar.put("value", e.getValue());
+            // 确保值始终是字符串，防止类型不一致导致的模板渲染错误
+            Object value = e.getValue();
+            String valueStr = convertEnvValueToString(value, e.getKey());
+            envVar.put("value", valueStr);
             return envVar;
         }).collect(Collectors.toList());
-        context.put("environment", envList);
+        // 只有当环境变量列表不为空时才设置到上下文中
+        // 这样模板中的 {{^environment}} 分支可以正确处理空列表的情况
+        if (!envList.isEmpty()) {
+            context.put("environment", envList);
+        }
         
         // 网络
         String networkName = "env-" + envId + "-net";
@@ -252,6 +267,36 @@ public class TemplateManagerService {
         }
         
         return context;
+    }
+    
+    /**
+     * 将环境变量值安全地转换为字符串
+     * 
+     * 即使 ExperimentMetadata.env 声明为 Map<String, String>，
+     * Jackson 在反序列化 JSON 时，如果遇到对象值，可能会将其反序列化为 Map 或其他类型。
+     * 此方法确保所有环境变量值都被转换为字符串，避免 Docker Compose 解析错误。
+     * 
+     * @param value 环境变量值（可能是 String、Map、List 或其他类型）
+     * @param key 环境变量键（用于日志记录）
+     * @return 字符串形式的环境变量值
+     */
+    private String convertEnvValueToString(Object value, String key) {
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof String) {
+            return (String) value;
+        }
+        // 如果是 Map 或其他对象，转换为 JSON 字符串
+        // 这样用户可以在环境变量中传递 JSON 对象（作为字符串）
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper = 
+                new com.fasterxml.jackson.databind.ObjectMapper();
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            log.warn("环境变量值转换失败，key={}, value={}，使用 toString()", key, value, ex);
+            return String.valueOf(value);
+        }
     }
     
     /**

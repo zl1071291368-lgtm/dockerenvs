@@ -22,7 +22,8 @@ services:
 {{/environment}}
 {{^environment}}
       - APP_PORT={{hostPort}}
-      - CONTAINER_PORT={{containerPort}}{{/environment}}
+      - CONTAINER_PORT={{containerPort}}
+{{/environment}}
 {{#workingDir}}
     working_dir: {{workingDir}}
 {{/workingDir}}

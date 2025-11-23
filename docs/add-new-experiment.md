@@ -116,6 +116,11 @@ apps/exp-nginx-xxx/
 }
 ```
 
+**注意事项**：
+- 环境变量值必须是字符串类型
+- 如果 JSON 中某个环境变量值是对象（如 Map），系统会自动将其转换为 JSON 字符串
+- 例如：`{"CONFIG": {"host": "localhost"}}` 会被转换为 `{"CONFIG": "{\"host\":\"localhost\"}"}`
+
 ### 完整示例
 
 #### Java 实验（带数据库）
@@ -232,6 +237,12 @@ apps/exp-nginx-xxx/
 3. 检查容器是否正常启动
 4. 访问实验应用（Web 类型）或连接终端（CLI 类型）
 
+**终端访问**：
+- 每个环境（容器）都支持通过 WebSocket 终端访问
+- 系统会自动尝试使用 `/bin/bash`，如果不存在则降级到 `/bin/sh` 或 `sh`
+- 通过前端界面点击"打开终端"按钮，或直接访问 `/terminal.html?containerId={containerId}`
+- 终端连接地址：`ws://{server}/ws/terminal?containerId={containerId}`
+
 ## 运行时类型说明
 
 系统支持以下运行时类型，每种类型有默认配置：
@@ -295,7 +306,10 @@ apps/exp-nginx-xxx/
 2. **镜像可用性**：确保 `baseImage` 在 Docker Hub 可用或已本地构建
 3. **端口冲突**：系统会自动分配主机端口（18000-19999），无需手动指定
 4. **数据库连接**：使用共享 MySQL 时，容器内通过容器名访问（如 `shared-mysql:3306`）
-5. **环境变量**：启动命令中可使用 `${CONTAINER_PORT}`、`${APP_PORT}` 等变量
+5. **环境变量**：
+   - 启动命令中可使用 `${CONTAINER_PORT}`、`${APP_PORT}` 等变量
+   - 环境变量值必须是字符串，对象值会自动转换为 JSON 字符串
+6. **终端访问**：每个容器都支持通过 WebSocket 终端访问，系统会自动选择合适的 shell（bash/sh）
 
 ## 参考
 
