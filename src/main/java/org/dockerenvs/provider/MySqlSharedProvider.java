@@ -88,7 +88,7 @@ public class MySqlSharedProvider implements DatabaseProvider {
     }
     
     @Override
-    public String getServiceConfig() {
+    public String getServiceConfig(DatabaseConfig config, Map<String, Object> context) {
         // 共享模式不需要在docker-compose中定义服务
         return "";
     }

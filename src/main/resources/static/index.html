@@ -394,17 +394,17 @@
             }
         }
 
-        // 启动环境（通过重置实现）
+        // 启动环境（启动已存在的容器）
         async function startEnv(envId) {
             try {
-                const response = await fetch(`${API_BASE}/reset?envId=${envId}`, {
+                const response = await fetch(`${API_BASE}/start-existing?envId=${envId}`, {
                     method: 'POST'
                 });
                 const result = await response.json();
                 
                 if (result.success) {
                     showToast('环境已启动', 'success');
-                    setTimeout(loadEnvs, 2000);
+                    setTimeout(loadEnvs, 1000);
                 } else {
                     showToast('启动失败: ' + result.message, 'danger');
                 }

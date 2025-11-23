@@ -1,9 +1,11 @@
 package org.dockerenvs.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.dockerenvs.dao.mapper.PortUsageMapper;
 import org.dockerenvs.entity.PortUsage;
+import org.dockerenvs.exception.PortException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -32,27 +34,46 @@ public class PortManagerService {
     private Integer maxPort;
     
     /**
-     * 分配端口
+     * 分配端口（使用数据库锁保证并发安全）
      */
     @Transactional(rollbackFor = Exception.class)
     public Integer assignPort(String envId) {
-        // 1. 获取已使用的端口
+        // 1. 获取已使用的端口（在事务中查询，保证一致性）
         Set<Integer> usedPorts = getUsedPorts();
         
         // 2. 从最小端口开始查找可用端口
         for (int port = minPort; port <= maxPort; port++) {
-            if (!usedPorts.contains(port) && isPortAvailable(port)) {
-                // 3. 检查端口记录是否存在（可能状态是FREE）
+            // 跳过已使用的端口
+            if (usedPorts.contains(port)) {
+                continue;
+            }
+            
+            // 检查端口是否被系统占用
+            if (!isPortAvailable(port)) {
+                continue;
+            }
+            
+            // 3. 使用数据库锁机制分配端口（防止并发冲突）
+            try {
                 PortUsage existingPortUsage = portUsageMapper.selectById(port);
                 if (existingPortUsage != null) {
-                    // 如果存在但状态是FREE，更新为USED
+                    // 如果存在但状态是FREE，尝试更新为USED（使用乐观锁）
                     if ("FREE".equals(existingPortUsage.getStatus())) {
-                        existingPortUsage.setEnvId(envId);
-                        existingPortUsage.setStatus("USED");
-                        existingPortUsage.setAllocatedTime(java.time.LocalDateTime.now());
-                        portUsageMapper.updateById(existingPortUsage);
-                        log.info("重新分配端口: {} 给环境: {}", port, envId);
-                        return port;
+                        // 使用UPDATE ... WHERE status='FREE' 保证原子性
+                        LambdaUpdateWrapper<PortUsage> updateWrapper = new LambdaUpdateWrapper<>();
+                        updateWrapper.eq(PortUsage::getPort, port)
+                                     .eq(PortUsage::getStatus, "FREE")
+                                     .set(PortUsage::getEnvId, envId)
+                                     .set(PortUsage::getStatus, "USED")
+                                     .set(PortUsage::getAllocatedTime, java.time.LocalDateTime.now());
+                        
+                        int updated = portUsageMapper.update(null, updateWrapper);
+                        if (updated > 0) {
+                            log.info("重新分配端口: {} 给环境: {}", port, envId);
+                            return port;
+                        }
+                        // 如果更新失败，说明端口已被其他线程占用，继续查找下一个
+                        continue;
                     } else {
                         // 状态是USED，跳过
                         continue;
@@ -65,14 +86,24 @@ public class PortManagerService {
                     portUsage.setStatus("USED");
                     portUsage.setAllocatedTime(java.time.LocalDateTime.now());
                     
-                    portUsageMapper.insert(portUsage);
-                    log.info("分配端口: {} 给环境: {}", port, envId);
-                    return port;
+                    try {
+                        portUsageMapper.insert(portUsage);
+                        log.info("分配端口: {} 给环境: {}", port, envId);
+                        return port;
+                    } catch (Exception e) {
+                        // 如果插入失败（可能是唯一约束冲突），继续查找下一个端口
+                        log.debug("端口 {} 插入失败，可能已被占用，继续查找: {}", port, e.getMessage());
+                        continue;
+                    }
                 }
+            } catch (Exception e) {
+                log.warn("分配端口 {} 时出错，继续查找: {}", port, e.getMessage());
+                continue;
             }
         }
         
-        throw new RuntimeException("没有可用的端口，端口范围已用完");
+        throw new PortException(PortException.ERROR_CODE_NO_AVAILABLE_PORT,
+            String.format("没有可用的端口，端口范围 [%d-%d] 已用完", minPort, maxPort));
     }
     
     /**
@@ -80,13 +111,25 @@ public class PortManagerService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void releasePort(Integer port) {
-        PortUsage portUsage = portUsageMapper.selectById(port);
-        if (portUsage != null) {
-            portUsage.setStatus("FREE");
-            portUsageMapper.updateById(portUsage);
-            log.info("释放端口: {}", port);
-        } else {
-            log.warn("端口记录不存在，无法释放: {}", port);
+        if (port == null) {
+            log.warn("端口号为空，无法释放");
+            return;
+        }
+        
+        try {
+            PortUsage portUsage = portUsageMapper.selectById(port);
+            if (portUsage != null) {
+                portUsage.setStatus("FREE");
+                portUsage.setEnvId(null); // 清空环境ID
+                portUsageMapper.updateById(portUsage);
+                log.info("释放端口: {}", port);
+            } else {
+                log.warn("端口记录不存在，无法释放: {}", port);
+            }
+        } catch (Exception e) {
+            log.error("释放端口失败: port={}", port, e);
+            throw new PortException(PortException.ERROR_CODE_PORT_RELEASE_FAILED,
+                "释放端口失败: " + port, e);
         }
     }
     

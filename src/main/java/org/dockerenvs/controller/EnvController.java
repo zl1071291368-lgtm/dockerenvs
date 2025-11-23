@@ -1,6 +1,7 @@
 package org.dockerenvs.controller;
 
 import lombok.extern.slf4j.Slf4j;
+import org.dockerenvs.dto.ApiResponse;
 import org.dockerenvs.dto.EnvInfo;
 import org.dockerenvs.dto.StartEnvRequest;
 import org.dockerenvs.service.EnvManagerService;
@@ -8,9 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 环境管理 REST API
@@ -28,28 +27,11 @@ public class EnvController {
      * POST /api/env/start
      */
     @PostMapping("/start")
-    public ResponseEntity<Map<String, Object>> startEnv(@RequestBody StartEnvRequest request) {
+    public ResponseEntity<ApiResponse<EnvInfo>> startEnv(@RequestBody StartEnvRequest request) {
         log.info("启动环境请求: userId={}, systemId={}, expId={}", 
             request.getUserId(), request.getSystemId(), request.getExpId());
-        try {
-            EnvInfo envInfo = envManagerService.createEnv(request);
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("data", envInfo);
-            response.put("message", "环境启动成功");
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("启动环境失败", e);
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            // 添加详细的错误信息
-            if (e.getCause() != null) {
-                response.put("detail", e.getCause().getMessage());
-            }
-            response.put("error", e.getClass().getSimpleName());
-            return ResponseEntity.status(500).body(response);
-        }
+        EnvInfo envInfo = envManagerService.createEnv(request);
+        return ResponseEntity.ok(ApiResponse.success(envInfo, "环境启动成功"));
     }
     
     /**
@@ -57,24 +39,21 @@ public class EnvController {
      * POST /api/env/stop
      */
     @PostMapping("/stop")
-    public ResponseEntity<Map<String, Object>> stopEnv(@RequestParam String envId) {
+    public ResponseEntity<ApiResponse<Object>> stopEnv(@RequestParam String envId) {
         log.info("停止环境: envId={}", envId);
-        
-        try {
-            envManagerService.stopEnv(envId);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "环境停止成功");
-            
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("停止环境失败", e);
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            return ResponseEntity.status(500).body(response);
-        }
+        envManagerService.stopEnv(envId);
+        return ResponseEntity.ok(ApiResponse.success(null, "环境停止成功"));
+    }
+    
+    /**
+     * 启动已停止的环境（启动已存在的容器）
+     * POST /api/env/start-existing
+     */
+    @PostMapping("/start-existing")
+    public ResponseEntity<ApiResponse<Object>> startEnv(@RequestParam String envId) {
+        log.info("启动环境: envId={}", envId);
+        envManagerService.startEnv(envId);
+        return ResponseEntity.ok(ApiResponse.success(null, "环境启动成功"));
     }
     
     /**
@@ -82,24 +61,10 @@ public class EnvController {
      * POST /api/env/reset
      */
     @PostMapping("/reset")
-    public ResponseEntity<Map<String, Object>> resetEnv(@RequestParam String envId) {
+    public ResponseEntity<ApiResponse<Object>> resetEnv(@RequestParam String envId) {
         log.info("重置环境: envId={}", envId);
-        
-        try {
-            envManagerService.resetEnv(envId);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "环境重置成功");
-            
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("重置环境失败", e);
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            return ResponseEntity.status(500).body(response);
-        }
+        envManagerService.resetEnv(envId);
+        return ResponseEntity.ok(ApiResponse.success(null, "环境重置成功"));
     }
     
     /**
@@ -107,28 +72,10 @@ public class EnvController {
      * DELETE /api/env/{envId}
      */
     @DeleteMapping("/{envId}")
-    public ResponseEntity<Map<String, Object>> destroyEnv(@PathVariable String envId) {
+    public ResponseEntity<ApiResponse<Object>> destroyEnv(@PathVariable String envId) {
         log.info("销毁环境: envId={}", envId);
-        
-        try {
-            envManagerService.destroyEnv(envId);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "环境销毁成功");
-            
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("销毁环境失败", e);
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            if (e.getCause() != null) {
-                response.put("detail", e.getCause().getMessage());
-            }
-            response.put("error", e.getClass().getSimpleName());
-            return ResponseEntity.status(500).body(response);
-        }
+        envManagerService.destroyEnv(envId);
+        return ResponseEntity.ok(ApiResponse.success(null, "环境销毁成功"));
     }
     
     /**
@@ -137,9 +84,9 @@ public class EnvController {
      * 或 DELETE /api/env/delete (请求体: {"envId": "xxx"})
      */
     @DeleteMapping("/delete")
-    public ResponseEntity<Map<String, Object>> destroyEnvFlexible(
+    public ResponseEntity<ApiResponse<Object>> destroyEnvFlexible(
             @RequestParam(required = false) String envId,
-            @RequestBody(required = false) Map<String, String> body) {
+            @RequestBody(required = false) java.util.Map<String, String> body) {
         
         // 从查询参数或请求体中获取envId
         String targetEnvId = envId;
@@ -148,29 +95,13 @@ public class EnvController {
         }
         
         if (targetEnvId == null || targetEnvId.isEmpty()) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "envId参数不能为空");
-            return ResponseEntity.badRequest().body(response);
+            return ResponseEntity.badRequest()
+                .body(ApiResponse.error("BAD_REQUEST", "envId参数不能为空"));
         }
         
         log.info("销毁环境: envId={}", targetEnvId);
-        
-        try {
-            envManagerService.destroyEnv(targetEnvId);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "环境销毁成功");
-            
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("销毁环境失败", e);
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            return ResponseEntity.status(500).body(response);
-        }
+        envManagerService.destroyEnv(targetEnvId);
+        return ResponseEntity.ok(ApiResponse.success(null, "环境销毁成功"));
     }
     
     /**
@@ -178,21 +109,14 @@ public class EnvController {
      * GET /api/env/{envId}/status
      */
     @GetMapping("/{envId}/status")
-    public ResponseEntity<Map<String, Object>> getEnvStatus(@PathVariable String envId) {
+    public ResponseEntity<ApiResponse<EnvInfo>> getEnvStatus(@PathVariable String envId) {
         log.info("查询环境状态: envId={}", envId);
-        
         EnvInfo envInfo = envManagerService.getEnvStatus(envId);
-        
-        Map<String, Object> response = new HashMap<>();
         if (envInfo != null) {
-            response.put("success", true);
-            response.put("data", envInfo);
+            return ResponseEntity.ok(ApiResponse.success(envInfo));
         } else {
-            response.put("success", false);
-            response.put("message", "环境不存在");
+            return ResponseEntity.ok(ApiResponse.error("ENV_NOT_FOUND", "环境不存在"));
         }
-        
-        return ResponseEntity.ok(response);
     }
     
     /**
@@ -200,17 +124,10 @@ public class EnvController {
      * GET /api/env/user/{userId}
      */
     @GetMapping("/user/{userId}")
-    public ResponseEntity<Map<String, Object>> getUserEnvs(@PathVariable String userId) {
+    public ResponseEntity<ApiResponse<List<EnvInfo>>> getUserEnvs(@PathVariable String userId) {
         log.info("查询用户环境: userId={}", userId);
-        
         List<EnvInfo> envs = envManagerService.getUserEnvs(userId);
-        
-        Map<String, Object> response = new HashMap<>();
-        response.put("success", true);
-        response.put("data", envs);
-        response.put("total", envs.size());
-        
-        return ResponseEntity.ok(response);
+        return ResponseEntity.ok(ApiResponse.success(envs));
     }
     
     /**
@@ -218,17 +135,10 @@ public class EnvController {
      * GET /api/env/all
      */
     @GetMapping("/all")
-    public ResponseEntity<Map<String, Object>> getAllEnvs() {
+    public ResponseEntity<ApiResponse<List<EnvInfo>>> getAllEnvs() {
         log.info("查询所有环境");
-        
         List<EnvInfo> envs = envManagerService.getAllEnvs();
-        
-        Map<String, Object> response = new HashMap<>();
-        response.put("success", true);
-        response.put("data", envs);
-        response.put("total", envs.size());
-        
-        return ResponseEntity.ok(response);
+        return ResponseEntity.ok(ApiResponse.success(envs));
     }
 }
 

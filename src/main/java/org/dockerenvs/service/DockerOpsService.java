@@ -1,6 +1,7 @@
 package org.dockerenvs.service;
 
 import lombok.extern.slf4j.Slf4j;
+import org.dockerenvs.exception.ContainerException;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -10,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -106,20 +108,23 @@ public class DockerOpsService {
      * @param envDir 环境目录
      * @param waitForHealthy 是否等待健康检查完成
      */
+    /**
+     * 启动容器（使用docker-compose）
+     * @param envDir 环境目录
+     * @param waitForHealthy 是否等待健康检查完成
+     */
     public String startContainer(String envDir, boolean waitForHealthy) {
         // 先检查 Docker 是否可用
         if (!isDockerAvailable()) {
             String errorMsg = "Docker 不可用。请确保 Docker Desktop 已启动并正在运行。";
             log.error(errorMsg);
-            throw new RuntimeException(parseDockerError(errorMsg));
+            throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                parseDockerError(errorMsg));
         }
         
         try {
             Path composeFile = Paths.get(envDir, "docker-compose.yml");
             Path composeDir = Paths.get(envDir);
-            
-            // 从环境目录路径中提取 envId（目录名称的最后一部分）
-            // 或者从 .env 文件中读取 CONTAINER_NAME，然后提取 envId
             String projectName = extractProjectNameFromEnvDir(envDir);
             
             ProcessBuilder processBuilder = new ProcessBuilder(
@@ -147,23 +152,19 @@ public class DockerOpsService {
                 String errorMsg = output.toString();
                 log.error("Docker Compose启动失败，退出码: {}, 输出: {}", exitCode, errorMsg);
                 String friendlyError = parseDockerError(errorMsg);
-                throw new RuntimeException("启动容器失败，退出码: " + exitCode + "\n" + friendlyError);
+                throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                    "启动容器失败，退出码: " + exitCode + "\n" + friendlyError);
             }
             
-            // 获取容器ID
+            // 获取容器ID（应用容器）
             String containerId = getContainerId(envDir);
             if (containerId == null || containerId.trim().isEmpty()) {
                 log.error("无法获取容器ID，Docker Compose输出: {}", output.toString());
-                throw new RuntimeException("无法获取容器ID，请检查Docker Compose输出: " + output.toString());
+                throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                    "无法获取容器ID，请检查Docker Compose输出: " + output.toString());
             }
             
             log.info("容器启动成功，容器ID: {}", containerId);
-            
-            // 验证容器是否真的存在
-            if (!containerExists(containerId)) {
-                log.error("容器启动后不存在: containerId={}", containerId);
-                throw new RuntimeException("容器启动后不存在，容器ID: " + containerId);
-            }
             
             if (waitForHealthy) {
                 // 等待容器健康检查
@@ -174,9 +175,15 @@ public class DockerOpsService {
             
             return containerId;
             
+        } catch (ContainerException e) {
+            throw e;
         } catch (IOException | InterruptedException e) {
             log.error("启动容器失败", e);
-            throw new RuntimeException("启动容器失败", e);
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                "启动容器失败: " + e.getMessage(), e);
         }
     }
     
@@ -235,7 +242,11 @@ public class DockerOpsService {
             
         } catch (IOException | InterruptedException e) {
             log.error("停止容器失败", e);
-            throw new RuntimeException("停止容器失败", e);
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new ContainerException(ContainerException.ERROR_CODE_STOP_FAILED,
+                "停止容器失败: " + e.getMessage(), e);
         }
     }
     
@@ -247,7 +258,133 @@ public class DockerOpsService {
     }
     
     /**
-     * 获取容器ID
+     * 只停止容器，不删除（用于停止/启动操作）
+     * @param envDir 环境目录
+     */
+    public void stopContainerOnly(String envDir) {
+        try {
+            Path composeFile = Paths.get(envDir, "docker-compose.yml");
+            Path composeDir = Paths.get(envDir);
+            
+            String projectName = extractProjectNameFromEnvDir(envDir);
+            
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "compose", "-f", composeFile.toString(), 
+                "-p", projectName, "stop"
+            );
+            processBuilder.directory(composeDir.toFile());
+            processBuilder.redirectErrorStream(true);
+            
+            Process process = processBuilder.start();
+            
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                    log.info("Docker Compose: {}", line);
+                }
+            }
+            
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                log.warn("停止容器可能失败，退出码: {}, 输出: {}", exitCode, output.toString());
+            } else {
+                log.info("容器停止成功（保留容器）");
+            }
+            
+        } catch (IOException | InterruptedException e) {
+            log.error("停止容器失败", e);
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new ContainerException(ContainerException.ERROR_CODE_STOP_FAILED,
+                "停止容器失败: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * 启动已存在的容器（用于停止/启动操作）
+     * @param envDir 环境目录
+     * @return 容器ID
+     */
+    public String startContainerOnly(String envDir) {
+        if (!isDockerAvailable()) {
+            String errorMsg = "Docker 不可用。请确保 Docker Desktop 已启动并正在运行。";
+            log.error(errorMsg);
+            throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                parseDockerError(errorMsg));
+        }
+        
+        try {
+            Path composeFile = Paths.get(envDir, "docker-compose.yml");
+            Path composeDir = Paths.get(envDir);
+            
+            String projectName = extractProjectNameFromEnvDir(envDir);
+            
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "compose", "-f", composeFile.toString(), 
+                "-p", projectName, "start"
+            );
+            processBuilder.directory(composeDir.toFile());
+            processBuilder.redirectErrorStream(true);
+            
+            Process process = processBuilder.start();
+            
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                    log.info("Docker Compose: {}", line);
+                }
+            }
+            
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                String errorMsg = output.toString();
+                log.error("Docker Compose启动失败，退出码: {}, 输出: {}", exitCode, errorMsg);
+                String friendlyError = parseDockerError(errorMsg);
+                throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                    "启动容器失败，退出码: " + exitCode + "\n" + friendlyError);
+            }
+            
+            // 获取容器ID
+            String containerId = getContainerId(envDir);
+            if (containerId == null || containerId.trim().isEmpty()) {
+                log.error("无法获取容器ID，Docker Compose输出: {}", output.toString());
+                throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                    "无法获取容器ID，请检查Docker Compose输出: " + output.toString());
+            }
+            
+            log.info("容器启动成功（使用已存在的容器），容器ID: {}", containerId);
+            
+            // 验证容器是否真的存在
+            if (!containerExists(containerId)) {
+                log.error("容器启动后不存在: containerId={}", containerId);
+                throw new ContainerException(ContainerException.ERROR_CODE_NOT_FOUND,
+                    "容器启动后不存在，容器ID: " + containerId);
+            }
+            
+            return containerId;
+            
+        } catch (ContainerException e) {
+            // 直接抛出容器异常
+            throw e;
+        } catch (IOException | InterruptedException e) {
+            log.error("启动容器失败", e);
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                "启动容器失败: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * 获取容器ID（返回第一个容器，通常是应用容器）
      */
     private String getContainerId(String envDir) {
         try {
@@ -280,6 +417,7 @@ public class DockerOpsService {
             return null;
         }
     }
+    
     
     /**
      * 等待容器健康
@@ -411,33 +549,44 @@ public class DockerOpsService {
     
     /**
      * 从环境目录中提取项目名称（envId）
-     * 优先从 .env 文件中读取 ENV_ID，确保每个环境都有唯一的项目名称
+     * 优先从 docker-compose.yml 中解析 container_name，确保每个环境都有唯一的项目名称
      * Docker Compose 项目名称只能包含小写字母、数字、下划线和连字符
      * 
      * 重要：项目名称必须唯一，否则会导致不同环境的容器互相覆盖
      */
     private String extractProjectNameFromEnvDir(String envDir) {
+        // 方案1：从 docker-compose.yml 解析 container_name
+        try {
+            Path composeFile = Paths.get(envDir, "docker-compose.yml");
+            if (Files.exists(composeFile)) {
+                String containerName = extractContainerNameFromCompose(composeFile);
+                if (containerName != null && containerName.startsWith("env-")) {
+                    // container_name 格式是 "env-{envId}"，提取 envId 作为项目名称
+                    String projectName = containerName.toLowerCase().replaceAll("[^a-z0-9_-]", "_");
+                    log.debug("从 docker-compose.yml 解析 container_name 作为项目名称: {}", projectName);
+                    return projectName;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("从 docker-compose.yml 解析失败，尝试后备方案: {}", envDir, e);
+        }
+        
+        // 方案2：从 .env 文件读取（向后兼容，如果存在）
         try {
             Path envFile = Paths.get(envDir, ".env");
             if (Files.exists(envFile)) {
                 List<String> lines = Files.readAllLines(envFile);
-                // 优先读取 ENV_ID（这是最可靠的方式，因为每个环境都有唯一的ENV_ID）
                 for (String line : lines) {
                     if (line.startsWith("ENV_ID=")) {
                         String envId = line.substring("ENV_ID=".length()).trim();
                         if (!envId.isEmpty()) {
-                            // 使用 ENV_ID 作为项目名称，确保唯一性
                             String projectName = "env-" + envId.toLowerCase().replaceAll("[^a-z0-9_-]", "_");
                             log.debug("从 .env 文件读取 ENV_ID 作为项目名称: {}", projectName);
                             return projectName;
                         }
                     }
-                }
-                // 如果没有ENV_ID，尝试从CONTAINER_NAME提取
-                for (String line : lines) {
                     if (line.startsWith("CONTAINER_NAME=")) {
                         String containerName = line.substring("CONTAINER_NAME=".length()).trim();
-                        // CONTAINER_NAME 格式是 "env-xxx"，直接使用
                         if (containerName.startsWith("env-")) {
                             String projectName = containerName.toLowerCase().replaceAll("[^a-z0-9_-]", "_");
                             log.debug("从 .env 文件读取 CONTAINER_NAME 作为项目名称: {}", projectName);
@@ -447,21 +596,16 @@ public class DockerOpsService {
                 }
             }
         } catch (Exception e) {
-            log.warn("读取 .env 文件失败，尝试从目录路径提取项目名称: {}", envDir, e);
+            log.warn("读取 .env 文件失败: {}", envDir, e);
         }
         
-        // 如果无法从 .env 文件读取，使用完整路径的hash值确保唯一性
-        // 目录结构：{userEnvsBasePath}/{userId}/{systemId}/{expId}/
-        // 使用完整路径的hash值确保唯一性，避免不同环境使用相同目录名导致冲突
+        // 方案3：使用完整路径的hash值确保唯一性（最后的后备方案）
         try {
             Path path = Paths.get(envDir);
-            // 使用目录的绝对路径生成唯一标识
             String absolutePath = path.toAbsolutePath().toString();
-            // 生成一个基于路径的hash值，确保唯一性
             int hashCode = absolutePath.hashCode();
-            // 使用 "env_" 前缀 + hash值确保唯一性
             String uniqueName = "env_" + Math.abs(hashCode);
-            log.warn("无法从 .env 文件读取项目名称，使用路径hash值: {} (路径: {})", uniqueName, absolutePath);
+            log.warn("无法从文件提取项目名称，使用路径hash值: {} (路径: {})", uniqueName, absolutePath);
             return uniqueName.toLowerCase().replaceAll("[^a-z0-9_-]", "_");
         } catch (Exception e) {
             log.error("从目录路径提取项目名称失败: {}", envDir, e);
@@ -470,6 +614,36 @@ public class DockerOpsService {
             log.error("使用UUID作为后备项目名称: {}", fallbackName);
             return fallbackName;
         }
+    }
+    
+    /**
+     * 从 docker-compose.yml 文件中提取 container_name
+     */
+    private String extractContainerNameFromCompose(Path composeFile) {
+        try {
+            org.yaml.snakeyaml.Yaml yaml = new org.yaml.snakeyaml.Yaml();
+            Map<String, Object> compose = yaml.load(Files.newInputStream(composeFile));
+            
+            if (compose != null && compose.containsKey("services")) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> services = (Map<String, Object>) compose.get("services");
+                if (services != null && !services.isEmpty()) {
+                    // 获取第一个服务（通常是 "app"）
+                    Object firstService = services.values().iterator().next();
+                    if (firstService instanceof Map) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> service = (Map<String, Object>) firstService;
+                        Object containerName = service.get("container_name");
+                        if (containerName instanceof String) {
+                            return (String) containerName;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("解析 docker-compose.yml 失败: {}", composeFile, e);
+        }
+        return null;
     }
 }
 

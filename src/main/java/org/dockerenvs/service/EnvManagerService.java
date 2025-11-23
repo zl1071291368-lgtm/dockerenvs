@@ -9,6 +9,9 @@ import org.dockerenvs.dto.EnvInfo;
 import org.dockerenvs.dto.ExperimentMetadata;
 import org.dockerenvs.dto.StartEnvRequest;
 import org.dockerenvs.entity.VirtualEnv;
+import org.dockerenvs.exception.ContainerException;
+import org.dockerenvs.exception.DatabaseException;
+import org.dockerenvs.exception.EnvNotFoundException;
 import org.dockerenvs.provider.DatabaseProvider;
 import org.dockerenvs.provider.ProviderManager;
 import org.springframework.beans.BeanUtils;
@@ -19,7 +22,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -82,19 +84,30 @@ public class EnvManagerService {
             return convertToEnvInfo(existingEnv);
         }
         
-        // 2. 如果环境存在但已停止，先释放端口再销毁
-        if (existingEnv != null) {
-            // 先释放端口，避免端口冲突
-            if (existingEnv.getPort() != null) {
-                try {
-                    portManagerService.releasePort(existingEnv.getPort());
-                    log.info("释放旧环境端口: port={}", existingEnv.getPort());
-                } catch (Exception e) {
-                    log.warn("释放旧环境端口失败，继续销毁: port={}", existingEnv.getPort(), e);
+        // 2. 如果环境存在但已停止，直接启动它
+        if (existingEnv != null && "STOPPED".equals(existingEnv.getStatus())) {
+            log.info("环境已存在但已停止，启动已存在的环境: {}", existingEnv.getEnvId());
+            try {
+                startEnv(existingEnv.getEnvId());
+                // 重新查询环境信息（状态已更新为RUNNING）
+                VirtualEnv updatedEnv = virtualEnvMapper.selectById(existingEnv.getEnvId());
+                return convertToEnvInfo(updatedEnv);
+            } catch (Exception e) {
+                log.error("启动已停止的环境失败: envId={}", existingEnv.getEnvId(), e);
+                // 如果启动失败（例如容器已被删除），继续创建新环境
+                log.info("启动失败，将销毁旧环境并创建新环境");
+                // 先释放端口，避免端口冲突
+                if (existingEnv.getPort() != null) {
+                    try {
+                        portManagerService.releasePort(existingEnv.getPort());
+                        log.info("释放旧环境端口: port={}", existingEnv.getPort());
+                    } catch (Exception ex) {
+                        log.warn("释放旧环境端口失败，继续销毁: port={}", existingEnv.getPort(), ex);
+                    }
                 }
+                // 然后销毁环境
+                destroyEnv(existingEnv.getEnvId());
             }
-            // 然后销毁环境
-            destroyEnv(existingEnv.getEnvId());
         }
         
         // 3. 分配端口
@@ -111,18 +124,20 @@ public class EnvManagerService {
         // 5. 读取实验元数据
         ExperimentMetadata metadata = readExperimentMetadata(request.getExpId());
         String runtimeType = metadata.getEffectiveRuntimeType();
-        boolean waitForHealth = runtimeType == null || !runtimeType.equalsIgnoreCase("python");
         
         // 5.1 获取实验程序包共享路径
         String programPath = fileManagerService.getAppSourcePath(request.getExpId());
         log.info("使用共享程序目录: {}", programPath);
+        
         // 6.5. 处理数据库配置（统一使用新的配置化方式，getEffectiveDatabaseConfig已处理向后兼容）
         DatabaseConfig dbConfig = metadata.getEffectiveDatabaseConfig();
+        DatabaseProvider dbProvider = null;
+        
         if (dbConfig != null && dbConfig.getEnabled()) {
             log.info("实验需要数据库，配置: provider={}, type={}, name={}", 
                 dbConfig.getProvider(), dbConfig.getType(), dbConfig.getName());
             try {
-                DatabaseProvider dbProvider = providerManager.getDatabaseProvider(dbConfig);
+                dbProvider = providerManager.getDatabaseProvider(dbConfig);
                 if (dbProvider != null) {
                     dbProvider.ensureDatabaseReady(dbConfig);
                     log.info("数据库已就绪");
@@ -132,31 +147,24 @@ public class EnvManagerService {
             } catch (Exception e) {
                 log.error("数据库初始化失败", e);
                 // 释放端口
-                cleanupResources(null, port);
-                throw new RuntimeException("数据库初始化失败: " + e.getMessage(), e);
+                cleanupResources(null, port, null);
+                throw new DatabaseException(DatabaseException.ERROR_CODE_INIT_FAILED, 
+                    "数据库初始化失败: " + e.getMessage(), e);
             }
         }
         
-        // 7. 生成docker-compose.yml和.env文件
+        // 决定是否等待健康检查（由数据库提供者和运行时类型决定）
+        boolean waitForHealth = (runtimeType == null || !runtimeType.equalsIgnoreCase("python"));
+        if (dbProvider != null) {
+            waitForHealth = waitForHealth && dbProvider.shouldWaitForAppHealthCheck();
+        }
+        
+        // 7. 生成docker-compose.yml文件
         String containerName = "env-" + envId;
         log.info("生成容器名称: {}", containerName);
         
-        // 优先使用新的配置化方式
-        if (metadata.getRuntimeType() != null || metadata.getDatabase() != null || 
-            metadata.getVolumes() != null || metadata.getHealthCheck() != null) {
-            // 使用新的V2方法
-            templateManagerService.generateComposeFileV2(envDir, programPath, metadata, envId, request.getUserId(), port);
-        } else {
-            // 向后兼容：使用旧方法
-            Map<String, String> variables = templateManagerService.buildVariables(
-                envId, request.getUserId(), request.getExpId(), port, envDir, programPath,
-                metadata.getBaseImage(), containerName, 
-                metadata.getType(), metadata.getPort(), metadata.getStartCommand(),
-                metadata.getNeedsDatabase(), metadata.getDatabaseName(), metadata.getDatabasePassword());
-            
-            templateManagerService.generateComposeFile(envDir, variables);
-            templateManagerService.generateEnvFile(envDir, variables);
-        }
+        // 使用配置化方式生成docker-compose.yml
+        templateManagerService.generateComposeFile(envDir, programPath, metadata, envId, request.getUserId(), port);
         
         // 8. 启动容器
         log.info("开始启动容器: envDir={}, containerName={}", envDir, containerName);
@@ -167,26 +175,27 @@ public class EnvManagerService {
         } catch (Exception e) {
             log.error("容器启动失败: envId={}, envDir={}", envId, envDir, e);
             // 清理已创建的资源
-            cleanupResources(envDir, port);
+            cleanupResources(envDir, port, containerId);
             // 抛出更详细的错误信息
-            throw new RuntimeException("容器启动失败: " + e.getMessage(), e);
+            if (e instanceof ContainerException) {
+                throw e;
+            }
+            throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                "容器启动失败: " + e.getMessage(), e);
         }
         
-        // 9. 再次验证容器状态（确保容器真的在运行）
-        if (!dockerOpsService.containerExists(containerId)) {
-            log.error("容器验证失败，容器不存在: envId={}, containerId={}", envId, containerId);
-            // 清理资源
-            try {
-                dockerOpsService.stopContainer(envDir);
-            } catch (Exception e) {
-                log.warn("清理失败的容器时出错", e);
+        // 9. 验证容器存在（由数据库提供者决定是否需要验证）
+        boolean shouldVerify = dbProvider == null || dbProvider.shouldVerifyContainerExists();
+        if (shouldVerify) {
+            if (!dockerOpsService.containerExists(containerId)) {
+                log.error("容器验证失败，容器不存在: envId={}, containerId={}", envId, containerId);
+                // 清理资源
+                cleanupResources(envDir, port, containerId);
+                throw new ContainerException(ContainerException.ERROR_CODE_NOT_FOUND,
+                    "容器验证失败，容器不存在: " + containerId);
             }
-            try {
-                portManagerService.releasePort(port);
-            } catch (Exception e) {
-                log.warn("释放端口失败", e);
-            }
-            throw new RuntimeException("容器验证失败，容器不存在: " + containerId);
+        } else {
+            log.info("数据库提供者配置跳过容器存在验证");
         }
         
         // 10. 保存环境信息
@@ -212,13 +221,13 @@ public class EnvManagerService {
     }
     
     /**
-     * 停止环境
+     * 停止环境（保留容器，不删除）
      */
     @Transactional(rollbackFor = Exception.class)
     public void stopEnv(String envId) {
         VirtualEnv env = virtualEnvMapper.selectById(envId);
         if (env == null) {
-            throw new RuntimeException("环境不存在: " + envId);
+            throw new EnvNotFoundException(envId);
         }
         
         if ("STOPPED".equals(env.getStatus())) {
@@ -226,31 +235,77 @@ public class EnvManagerService {
             return;
         }
         
-        // 停止容器
-        dockerOpsService.stopContainer(env.getEnvDir());
+        // 只停止容器，不删除（保留容器以便快速恢复）
+        dockerOpsService.stopContainerOnly(env.getEnvDir());
         
         // 更新状态
         env.setStatus("STOPPED");
         env.setUpdatedTime(LocalDateTime.now());
         virtualEnvMapper.updateById(env);
         
-        log.info("环境停止成功: {}", envId);
+        log.info("环境停止成功（容器已保留）: {}", envId);
     }
     
     /**
-     * 重置环境
+     * 启动环境（启动已存在的容器）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void startEnv(String envId) {
+        VirtualEnv env = virtualEnvMapper.selectById(envId);
+        if (env == null) {
+            throw new EnvNotFoundException(envId);
+        }
+        
+        if ("RUNNING".equals(env.getStatus())) {
+            log.info("环境已运行: {}", envId);
+            return;
+        }
+        
+        // 启动已存在的容器（如果容器不存在，会抛出异常）
+        String containerId = dockerOpsService.startContainerOnly(env.getEnvDir());
+        
+        // 验证容器ID是否有效
+        if (containerId == null || containerId.trim().isEmpty()) {
+            log.error("容器启动失败，无法获取容器ID: envId={}, envDir={}", envId, env.getEnvDir());
+            env.setStatus("STOPPED");
+            env.setUpdatedTime(LocalDateTime.now());
+            virtualEnvMapper.updateById(env);
+            throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                "容器启动失败，无法获取容器ID。如果容器不存在，请使用重置功能。");
+        }
+        
+        // 验证容器是否真的存在
+        if (!dockerOpsService.containerExists(containerId)) {
+            log.error("容器启动后不存在: envId={}, containerId={}", envId, containerId);
+            env.setStatus("STOPPED");
+            env.setUpdatedTime(LocalDateTime.now());
+            virtualEnvMapper.updateById(env);
+            throw new ContainerException(ContainerException.ERROR_CODE_NOT_FOUND,
+                "容器启动后不存在。如果容器已被删除，请使用重置功能。");
+        }
+        
+        // 更新状态（容器ID保持不变）
+        env.setStatus("RUNNING");
+        env.setUpdatedTime(LocalDateTime.now());
+        virtualEnvMapper.updateById(env);
+        
+        log.info("环境启动成功（使用已存在的容器）: {}", envId);
+    }
+    
+    /**
+     * 重置环境（删除并重建容器，确保配置变更生效）
      */
     @Transactional(rollbackFor = Exception.class)
     public void resetEnv(String envId) {
         VirtualEnv env = virtualEnvMapper.selectById(envId);
         if (env == null) {
-            throw new RuntimeException("环境不存在: " + envId);
+            throw new EnvNotFoundException(envId);
         }
         
-        // 停止容器
+        // 删除容器（使用 down，确保配置变更能生效）
         dockerOpsService.stopContainer(env.getEnvDir());
         
-        // 重新启动容器
+        // 重新创建并启动容器（使用 up，创建新容器）
         ExperimentMetadata metadata = readExperimentMetadata(env.getExpId());
         String runtimeType = metadata.getEffectiveRuntimeType();
         boolean waitForHealth = runtimeType == null || !runtimeType.equalsIgnoreCase("python");
@@ -262,7 +317,8 @@ public class EnvManagerService {
             env.setStatus("STOPPED");
             env.setUpdatedTime(LocalDateTime.now());
             virtualEnvMapper.updateById(env);
-            throw new RuntimeException("容器启动失败，无法获取容器ID");
+            throw new ContainerException(ContainerException.ERROR_CODE_START_FAILED,
+                "容器启动失败，无法获取容器ID");
         }
         
         // 验证容器是否真的存在
@@ -271,7 +327,8 @@ public class EnvManagerService {
             env.setStatus("STOPPED");
             env.setUpdatedTime(LocalDateTime.now());
             virtualEnvMapper.updateById(env);
-            throw new RuntimeException("容器启动后不存在");
+            throw new ContainerException(ContainerException.ERROR_CODE_NOT_FOUND,
+                "容器启动后不存在");
         }
         
         // 更新状态
@@ -291,7 +348,7 @@ public class EnvManagerService {
         VirtualEnv env = virtualEnvMapper.selectById(envId);
         if (env == null) {
             log.warn("环境不存在: {}", envId);
-            throw new RuntimeException("环境不存在: " + envId);
+            throw new EnvNotFoundException(envId);
         }
         
         log.info("开始销毁环境: envId={}, containerId={}, envDir={}", 
@@ -373,7 +430,8 @@ public class EnvManagerService {
             }
         } catch (Exception e) {
             log.error("更新数据库状态失败: envId={}", envId, e);
-            throw new RuntimeException("更新数据库状态失败", e);
+            // 销毁操作中的数据库更新失败不应该阻止销毁流程，只记录日志
+            log.warn("数据库状态更新失败，但环境已销毁: envId={}", envId);
         }
         
         log.info("环境销毁完成: envId={}, containerId={}", envId, containerId);
@@ -527,23 +585,43 @@ public class EnvManagerService {
      * @param envDir 环境目录
      * @param port 端口号
      */
-    private void cleanupResources(String envDir, Integer port) {
-        // 停止容器（错误处理时不需要删除volume，因为可能只是启动失败）
+    /**
+     * 清理资源（容器、端口、目录）
+     * @param envDir 环境目录
+     * @param port 端口号
+     * @param containerId 容器ID（可选，用于日志）
+     */
+    private void cleanupResources(String envDir, Integer port, String containerId) {
+        log.info("开始清理资源: envDir={}, port={}, containerId={}", envDir, port, containerId);
+        
+        // 1. 停止并删除容器（如果存在）
         if (envDir != null && !envDir.isEmpty()) {
             try {
-                dockerOpsService.stopContainer(envDir, false); // false表示保留volume
+                // 先尝试停止容器（保留volume，因为可能只是启动失败）
+                dockerOpsService.stopContainer(envDir, false);
+                log.info("容器停止成功: envDir={}", envDir);
             } catch (Exception ex) {
-                log.warn("清理失败的容器时出错: envDir={}", envDir, ex);
+                log.warn("停止容器失败: envDir={}", envDir, ex);
+                // 继续清理其他资源
             }
         }
-        // 释放端口
+        
+        // 2. 释放端口
         if (port != null) {
             try {
                 portManagerService.releasePort(port);
+                log.info("端口释放成功: port={}", port);
             } catch (Exception ex) {
                 log.warn("释放端口失败: port={}", port, ex);
+                // 继续清理其他资源
             }
         }
+        
+        // 3. 清理环境目录（可选，根据需求决定是否删除）
+        // 注意：通常不删除目录，保留日志和配置文件用于排查问题
+        // 如果需要完全清理，可以调用 fileManagerService.deleteDirectory()
+        
+        log.info("资源清理完成: envDir={}, port={}", envDir, port);
     }
 }
 
