@@ -8,6 +8,10 @@ import org.springframework.stereotype.Service;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 共享MySQL容器管理服务
@@ -665,6 +669,256 @@ public class SharedMysqlService {
         // 这里不删除网络，因为可能有其他容器在使用
         
         log.info("共享MySQL容器和volume删除完成");
+    }
+    
+    /**
+     * 获取所有数据库列表
+     */
+    public List<String> getDatabases() {
+        List<String> databases = new ArrayList<>();
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "exec", SHARED_MYSQL_CONTAINER_NAME,
+                "mysql", "-uroot", "-p" + rootPassword, "-e",
+                "SHOW DATABASES;",
+                "-h", "localhost", "-s", "-N"
+            );
+            Process process = processBuilder.start();
+            
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String db = line.trim();
+                    // 过滤系统数据库
+                    if (!db.isEmpty() && 
+                        !db.equals("information_schema") && 
+                        !db.equals("performance_schema") && 
+                        !db.equals("mysql") && 
+                        !db.equals("sys")) {
+                        databases.add(db);
+                    }
+                }
+            }
+            process.waitFor();
+        } catch (Exception e) {
+            log.error("获取数据库列表失败", e);
+            throw new RuntimeException("获取数据库列表失败", e);
+        }
+        return databases;
+    }
+    
+    /**
+     * 获取指定数据库的所有表
+     */
+    public List<String> getTables(String databaseName) {
+        List<String> tables = new ArrayList<>();
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "exec", SHARED_MYSQL_CONTAINER_NAME,
+                "mysql", "-uroot", "-p" + rootPassword, "-e",
+                "USE `" + databaseName + "`; SHOW TABLES;",
+                "-h", "localhost", "-s", "-N"
+            );
+            Process process = processBuilder.start();
+            
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String table = line.trim();
+                    if (!table.isEmpty()) {
+                        tables.add(table);
+                    }
+                }
+            }
+            process.waitFor();
+        } catch (Exception e) {
+            log.error("获取表列表失败: {}", databaseName, e);
+            throw new RuntimeException("获取表列表失败: " + databaseName, e);
+        }
+        return tables;
+    }
+    
+    /**
+     * 获取表结构信息
+     */
+    public List<Map<String, String>> getTableStructure(String databaseName, String tableName) {
+        List<Map<String, String>> columns = new ArrayList<>();
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "exec", SHARED_MYSQL_CONTAINER_NAME,
+                "mysql", "-uroot", "-p" + rootPassword, "-e",
+                "USE `" + databaseName + "`; DESCRIBE `" + tableName + "`;",
+                "-h", "localhost"
+            );
+            Process process = processBuilder.start();
+            
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                boolean isFirstLine = true;
+                while ((line = reader.readLine()) != null) {
+                    if (isFirstLine) {
+                        isFirstLine = false;
+                        continue; // 跳过表头
+                    }
+                    line = line.trim();
+                    if (line.isEmpty()) {
+                        continue;
+                    }
+                    
+                    // DESCRIBE 输出格式：Field Type Null Key Default Extra
+                    // 尝试按制表符分割，如果失败则按多个空格分割
+                    String[] parts;
+                    if (line.contains("\t")) {
+                        parts = line.split("\\t");
+                    } else {
+                        // 按多个空格分割
+                        parts = line.split("\\s{2,}");
+                    }
+                    
+                    if (parts.length >= 4) {
+                        Map<String, String> column = new HashMap<>();
+                        column.put("field", parts[0].trim());
+                        column.put("type", parts.length > 1 ? parts[1].trim() : "");
+                        column.put("null", parts.length > 2 ? parts[2].trim() : "");
+                        column.put("key", parts.length > 3 ? parts[3].trim() : "");
+                        column.put("default", parts.length > 4 ? parts[4].trim() : "");
+                        column.put("extra", parts.length > 5 ? parts[5].trim() : "");
+                        columns.add(column);
+                    } else {
+                        log.warn("无法解析表结构行: {}", line);
+                    }
+                }
+            }
+            process.waitFor();
+        } catch (Exception e) {
+            log.error("获取表结构失败: {}.{}", databaseName, tableName, e);
+            throw new RuntimeException("获取表结构失败: " + databaseName + "." + tableName, e);
+        }
+        return columns;
+    }
+    
+    /**
+     * 获取表数据（分页）
+     */
+    public Map<String, Object> getTableData(String databaseName, String tableName, int page, int pageSize) {
+        Map<String, Object> result = new HashMap<>();
+        List<Map<String, String>> rows = new ArrayList<>();
+        
+        try {
+            // 先获取总记录数
+            int total = getTableCount(databaseName, tableName);
+            result.put("total", total);
+            result.put("page", page);
+            result.put("pageSize", pageSize);
+            result.put("totalPages", (total + pageSize - 1) / pageSize);
+            
+            if (total == 0) {
+                result.put("rows", rows);
+                return result;
+            }
+            
+            // 计算偏移量
+            int offset = (page - 1) * pageSize;
+            
+            // 获取列名
+            List<String> columns = getTableColumns(databaseName, tableName);
+            result.put("columns", columns);
+            
+            // 查询数据
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "exec", SHARED_MYSQL_CONTAINER_NAME,
+                "mysql", "-uroot", "-p" + rootPassword, "-e",
+                "USE `" + databaseName + "`; SELECT * FROM `" + tableName + "` LIMIT " + pageSize + " OFFSET " + offset + ";",
+                "-h", "localhost"
+            );
+            Process process = processBuilder.start();
+            
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                boolean isFirstLine = true;
+                while ((line = reader.readLine()) != null) {
+                    if (isFirstLine) {
+                        isFirstLine = false;
+                        continue; // 跳过表头
+                    }
+                    String[] values = line.split("\\t");
+                    Map<String, String> row = new HashMap<>();
+                    for (int i = 0; i < columns.size() && i < values.length; i++) {
+                        row.put(columns.get(i), values[i].trim());
+                    }
+                    rows.add(row);
+                }
+            }
+            process.waitFor();
+            
+            result.put("rows", rows);
+        } catch (Exception e) {
+            log.error("获取表数据失败: {}.{}", databaseName, tableName, e);
+            throw new RuntimeException("获取表数据失败: " + databaseName + "." + tableName, e);
+        }
+        return result;
+    }
+    
+    /**
+     * 获取表的列名
+     */
+    private List<String> getTableColumns(String databaseName, String tableName) {
+        List<String> columns = new ArrayList<>();
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "exec", SHARED_MYSQL_CONTAINER_NAME,
+                "mysql", "-uroot", "-p" + rootPassword, "-e",
+                "USE `" + databaseName + "`; SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '" + databaseName + "' AND TABLE_NAME = '" + tableName + "' ORDER BY ORDINAL_POSITION;",
+                "-h", "localhost", "-s", "-N"
+            );
+            Process process = processBuilder.start();
+            
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String col = line.trim();
+                    if (!col.isEmpty()) {
+                        columns.add(col);
+                    }
+                }
+            }
+            process.waitFor();
+        } catch (Exception e) {
+            log.error("获取表列名失败: {}.{}", databaseName, tableName, e);
+        }
+        return columns;
+    }
+    
+    /**
+     * 获取表的记录总数
+     */
+    private int getTableCount(String databaseName, String tableName) {
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "docker", "exec", SHARED_MYSQL_CONTAINER_NAME,
+                "mysql", "-uroot", "-p" + rootPassword, "-e",
+                "USE `" + databaseName + "`; SELECT COUNT(*) FROM `" + tableName + "`;",
+                "-h", "localhost", "-s", "-N"
+            );
+            Process process = processBuilder.start();
+            
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line = reader.readLine();
+                if (line != null) {
+                    return Integer.parseInt(line.trim());
+                }
+            }
+            process.waitFor();
+        } catch (Exception e) {
+            log.error("获取表记录数失败: {}.{}", databaseName, tableName, e);
+        }
+        return 0;
     }
 }
 

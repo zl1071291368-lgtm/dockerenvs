@@ -7,6 +7,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -130,6 +131,124 @@ public class SharedMysqlController {
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("销毁共享MySQL失败", e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
+    /**
+     * 获取所有数据库列表
+     * GET /api/shared-mysql/databases
+     */
+    @GetMapping("/databases")
+    public ResponseEntity<Map<String, Object>> getDatabases() {
+        if (sharedMysqlService == null) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", "SharedMysqlService未配置");
+            return ResponseEntity.status(500).body(response);
+        }
+        
+        try {
+            List<String> databases = sharedMysqlService.getDatabases();
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("data", databases);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("获取数据库列表失败", e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
+    /**
+     * 获取指定数据库的所有表
+     * GET /api/shared-mysql/databases/{databaseName}/tables
+     */
+    @GetMapping("/databases/{databaseName}/tables")
+    public ResponseEntity<Map<String, Object>> getTables(@PathVariable String databaseName) {
+        if (sharedMysqlService == null) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", "SharedMysqlService未配置");
+            return ResponseEntity.status(500).body(response);
+        }
+        
+        try {
+            List<String> tables = sharedMysqlService.getTables(databaseName);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("data", tables);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("获取表列表失败: {}", databaseName, e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
+    /**
+     * 获取表结构
+     * GET /api/shared-mysql/databases/{databaseName}/tables/{tableName}/structure
+     */
+    @GetMapping("/databases/{databaseName}/tables/{tableName}/structure")
+    public ResponseEntity<Map<String, Object>> getTableStructure(
+            @PathVariable String databaseName,
+            @PathVariable String tableName) {
+        if (sharedMysqlService == null) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", "SharedMysqlService未配置");
+            return ResponseEntity.status(500).body(response);
+        }
+        
+        try {
+            List<Map<String, String>> structure = sharedMysqlService.getTableStructure(databaseName, tableName);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("data", structure);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("获取表结构失败: {}.{}", databaseName, tableName, e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
+    /**
+     * 获取表数据（分页）
+     * GET /api/shared-mysql/databases/{databaseName}/tables/{tableName}/data?page=1&pageSize=20
+     */
+    @GetMapping("/databases/{databaseName}/tables/{tableName}/data")
+    public ResponseEntity<Map<String, Object>> getTableData(
+            @PathVariable String databaseName,
+            @PathVariable String tableName,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        if (sharedMysqlService == null) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", "SharedMysqlService未配置");
+            return ResponseEntity.status(500).body(response);
+        }
+        
+        try {
+            Map<String, Object> data = sharedMysqlService.getTableData(databaseName, tableName, page, pageSize);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("data", data);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("获取表数据失败: {}.{}", databaseName, tableName, e);
             Map<String, Object> response = new HashMap<>();
             response.put("success", false);
             response.put("message", e.getMessage());

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>共享MySQL数据查看器</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f5f5f5;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .navbar {
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        .sidebar {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+            padding: 20px;
+            height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+        .main-content {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+            padding: 20px;
+            min-height: calc(100vh - 120px);
+        }
+        .database-item {
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .database-item:hover {
+            background-color: #e9ecef;
+        }
+        .database-item.active {
+            background-color: #007bff;
+            color: white;
+        }
+        .table-item {
+            padding: 8px 15px;
+            margin: 3px 0;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.9em;
+        }
+        .table-item:hover {
+            background-color: #f8f9fa;
+        }
+        .table-item.active {
+            background-color: #007bff;
+            color: white;
+        }
+        .data-table {
+            width: 100%;
+            font-size: 0.9em;
+        }
+        .data-table th {
+            background-color: #f8f9fa;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .data-table td {
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .data-table td:hover {
+            white-space: normal;
+            word-break: break-all;
+        }
+        .structure-table {
+            font-size: 0.85em;
+        }
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .pagination-info {
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="index.html">
+                <i class="bi bi-arrow-left"></i> 返回
+            </a>
+            <span class="navbar-text text-white">
+                <i class="bi bi-database"></i> 共享MySQL数据查看器
+            </span>
+            <div class="ms-auto">
+                <a href="shared-mysql.html" class="btn btn-light btn-sm">
+                    <i class="bi bi-gear"></i> 数据库管理
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <div class="row">
+            <!-- 左侧边栏：数据库和表列表 -->
+            <div class="col-md-3">
+                <div class="sidebar">
+                    <h5 class="mb-3">
+                        <i class="bi bi-database"></i> 数据库列表
+                        <button class="btn btn-sm btn-outline-primary float-end" onclick="loadDatabases()" title="刷新">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </h5>
+                    <div id="databaseList" class="mb-4">
+                        <div class="text-center text-muted">
+                            <div class="spinner-border spinner-border-sm" role="status"></div>
+                            <div class="mt-2">加载中...</div>
+                        </div>
+                    </div>
+                    
+                    <h5 class="mb-3 mt-4">
+                        <i class="bi bi-table"></i> 表列表
+                        <span id="selectedDatabase" class="badge bg-secondary ms-2"></span>
+                    </h5>
+                    <div id="tableList">
+                        <div class="text-center text-muted">
+                            <small>请先选择数据库</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧主内容区 -->
+            <div class="col-md-9">
+                <div class="main-content position-relative">
+                    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status"></div>
+                            <div class="mt-2">加载中...</div>
+                        </div>
+                    </div>
+
+                    <!-- 表结构 -->
+                    <div id="structureSection" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5>
+                                <i class="bi bi-diagram-3"></i> 表结构
+                                <span id="currentTableName" class="badge bg-primary ms-2"></span>
+                            </h5>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="loadTableStructure()">
+                                <i class="bi bi-arrow-clockwise"></i> 刷新
+                            </button>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-sm structure-table">
+                                <thead>
+                                    <tr>
+                                        <th>字段名</th>
+                                        <th>类型</th>
+                                        <th>是否为空</th>
+                                        <th>键</th>
+                                        <th>默认值</th>
+                                        <th>额外</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="structureBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 表数据 -->
+                    <div id="dataSection" style="display: none;" class="mt-4">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5>
+                                <i class="bi bi-list-ul"></i> 表数据
+                            </h5>
+                            <div class="d-flex align-items-center gap-2">
+                                <select id="pageSize" class="form-select form-select-sm" style="width: auto;" onchange="loadTableData()">
+                                    <option value="10">10条/页</option>
+                                    <option value="20" selected>20条/页</option>
+                                    <option value="50">50条/页</option>
+                                    <option value="100">100条/页</option>
+                                </select>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="loadTableData()">
+                                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
+                            <table class="table table-bordered table-hover data-table">
+                                <thead id="dataHeader">
+                                </thead>
+                                <tbody id="dataBody">
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- 分页 -->
+                        <div class="d-flex justify-content-between align-items-center mt-3">
+                            <div class="pagination-info" id="paginationInfo"></div>
+                            <nav>
+                                <ul class="pagination pagination-sm mb-0" id="pagination">
+                                </ul>
+                            </nav>
+                        </div>
+                    </div>
+
+                    <!-- 空状态 -->
+                    <div id="emptyState" class="text-center text-muted py-5">
+                        <i class="bi bi-inbox" style="font-size: 3rem;"></i>
+                        <p class="mt-3">请从左侧选择一个数据库和表来查看数据</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 11">
+        <div id="toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header">
+                <strong class="me-auto">通知</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastBody"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API_BASE = '/api/shared-mysql';
+        let toast = null;
+        let currentDatabase = null;
+        let currentTable = null;
+        let currentPage = 1;
+        let totalPages = 1;
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            toast = new bootstrap.Toast(document.getElementById('toast'));
+            loadDatabases();
+        });
+
+        // 加载数据库列表
+        async function loadDatabases() {
+            try {
+                const response = await fetch(`${API_BASE}/databases`);
+                const result = await response.json();
+                
+                const databaseList = document.getElementById('databaseList');
+                
+                if (result.success && result.data) {
+                    const databases = result.data;
+                    if (databases.length === 0) {
+                        databaseList.innerHTML = '<div class="text-center text-muted"><small>暂无数据库</small></div>';
+                        return;
+                    }
+                    
+                    databaseList.innerHTML = databases.map(db => `
+                        <div class="database-item ${currentDatabase === db ? 'active' : ''}" 
+                             onclick="selectDatabase('${db}')">
+                            <i class="bi bi-database"></i> ${db}
+                        </div>
+                    `).join('');
+                } else {
+                    databaseList.innerHTML = '<div class="text-danger"><small>加载失败: ' + (result.message || '未知错误') + '</small></div>';
+                    showToast('加载数据库列表失败: ' + (result.message || '未知错误'), 'danger');
+                }
+            } catch (error) {
+                document.getElementById('databaseList').innerHTML = '<div class="text-danger"><small>加载失败: ' + error.message + '</small></div>';
+                showToast('加载数据库列表失败: ' + error.message, 'danger');
+            }
+        }
+
+        // 选择数据库
+        async function selectDatabase(databaseName) {
+            currentDatabase = databaseName;
+            currentTable = null;
+            currentPage = 1;
+            
+            // 更新UI
+            document.querySelectorAll('.database-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.target.closest('.database-item').classList.add('active');
+            
+            document.getElementById('selectedDatabase').textContent = databaseName;
+            
+            // 加载表列表
+            await loadTables(databaseName);
+            
+            // 清空右侧内容
+            document.getElementById('structureSection').style.display = 'none';
+            document.getElementById('dataSection').style.display = 'none';
+            document.getElementById('emptyState').style.display = 'block';
+        }
+
+        // 加载表列表
+        async function loadTables(databaseName) {
+            try {
+                const response = await fetch(`${API_BASE}/databases/${encodeURIComponent(databaseName)}/tables`);
+                const result = await response.json();
+                
+                const tableList = document.getElementById('tableList');
+                
+                if (result.success && result.data) {
+                    const tables = result.data;
+                    if (tables.length === 0) {
+                        tableList.innerHTML = '<div class="text-center text-muted"><small>该数据库暂无表</small></div>';
+                        return;
+                    }
+                    
+                    tableList.innerHTML = tables.map(table => `
+                        <div class="table-item ${currentTable === table ? 'active' : ''}" 
+                             onclick="selectTable('${table}')">
+                            <i class="bi bi-table"></i> ${table}
+                        </div>
+                    `).join('');
+                } else {
+                    tableList.innerHTML = '<div class="text-danger"><small>加载失败: ' + (result.message || '未知错误') + '</small></div>';
+                    showToast('加载表列表失败: ' + (result.message || '未知错误'), 'danger');
+                }
+            } catch (error) {
+                document.getElementById('tableList').innerHTML = '<div class="text-danger"><small>加载失败: ' + error.message + '</small></div>';
+                showToast('加载表列表失败: ' + error.message, 'danger');
+            }
+        }
+
+        // 选择表
+        async function selectTable(tableName) {
+            currentTable = tableName;
+            currentPage = 1;
+            
+            // 更新UI
+            document.querySelectorAll('.table-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.target.closest('.table-item').classList.add('active');
+            
+            document.getElementById('currentTableName').textContent = tableName;
+            document.getElementById('emptyState').style.display = 'none';
+            
+            // 加载表结构和数据
+            await Promise.all([
+                loadTableStructure(),
+                loadTableData()
+            ]);
+        }
+
+        // 加载表结构
+        async function loadTableStructure() {
+            if (!currentDatabase || !currentTable) return;
+            
+            showLoading(true);
+            
+            try {
+                const response = await fetch(`${API_BASE}/databases/${encodeURIComponent(currentDatabase)}/tables/${encodeURIComponent(currentTable)}/structure`);
+                const result = await response.json();
+                
+                if (result.success && result.data) {
+                    const structure = result.data;
+                    const structureBody = document.getElementById('structureBody');
+                    
+                    // 调试：输出实际返回的数据
+                    console.log('表结构数据:', structure);
+                    
+                    if (structure.length === 0) {
+                        structureBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">该表没有字段或表不存在</td></tr>';
+                    } else {
+                        structureBody.innerHTML = structure.map(field => {
+                            // 兼容多种可能的字段名格式
+                            const fieldName = field.field || field.Field || field.Field || '-';
+                            const fieldType = field.type || field.Type || field.Type || '-';
+                            const fieldNull = field.null || field.Null || field.Null || '-';
+                            const fieldKey = field.key || field.Key || field.Key || '-';
+                            const fieldDefault = field.default !== undefined && field.default !== null ? field.default : (field.Default !== undefined && field.Default !== null ? field.Default : 'NULL');
+                            const fieldExtra = field.extra || field.Extra || field.Extra || '-';
+                            
+                            return `
+                                <tr>
+                                    <td><strong>${fieldName}</strong></td>
+                                    <td>${fieldType}</td>
+                                    <td>${fieldNull}</td>
+                                    <td>${fieldKey}</td>
+                                    <td>${fieldDefault}</td>
+                                    <td>${fieldExtra}</td>
+                                </tr>
+                            `;
+                        }).join('');
+                    }
+                    
+                    document.getElementById('structureSection').style.display = 'block';
+                } else {
+                    showToast('加载表结构失败: ' + (result.message || '未知错误'), 'danger');
+                    console.error('表结构加载失败:', result);
+                }
+            } catch (error) {
+                showToast('加载表结构失败: ' + error.message, 'danger');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 加载表数据
+        async function loadTableData() {
+            if (!currentDatabase || !currentTable) return;
+            
+            showLoading(true);
+            
+            try {
+                const pageSize = parseInt(document.getElementById('pageSize').value);
+                const response = await fetch(`${API_BASE}/databases/${encodeURIComponent(currentDatabase)}/tables/${encodeURIComponent(currentTable)}/data?page=${currentPage}&pageSize=${pageSize}`);
+                const result = await response.json();
+                
+                if (result.success && result.data) {
+                    const data = result.data;
+                    const rows = data.rows || [];
+                    const total = data.total || 0;
+                    totalPages = Math.ceil(total / pageSize);
+                    
+                    // 渲染表头
+                    if (rows.length > 0) {
+                        const headers = Object.keys(rows[0]);
+                        const dataHeader = document.getElementById('dataHeader');
+                        dataHeader.innerHTML = `<tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>`;
+                        
+                        // 渲染表体
+                        const dataBody = document.getElementById('dataBody');
+                        dataBody.innerHTML = rows.map(row => `
+                            <tr>${headers.map(h => `<td title="${row[h]}">${formatCellValue(row[h])}</td>`).join('')}</tr>
+                        `).join('');
+                    } else {
+                        document.getElementById('dataHeader').innerHTML = '<tr><th colspan="100%" class="text-center">暂无数据</th></tr>';
+                        document.getElementById('dataBody').innerHTML = '';
+                    }
+                    
+                    // 更新分页信息
+                    document.getElementById('paginationInfo').textContent = 
+                        `共 ${total} 条记录，第 ${currentPage} / ${totalPages} 页`;
+                    
+                    // 渲染分页
+                    renderPagination();
+                    
+                    document.getElementById('dataSection').style.display = 'block';
+                } else {
+                    showToast('加载表数据失败: ' + (result.message || '未知错误'), 'danger');
+                }
+            } catch (error) {
+                showToast('加载表数据失败: ' + error.message, 'danger');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 格式化单元格值
+        function formatCellValue(value) {
+            if (value === null || value === undefined) {
+                return '<span class="text-muted">NULL</span>';
+            }
+            if (typeof value === 'boolean') {
+                return value ? '✓' : '✗';
+            }
+            if (typeof value === 'object') {
+                return JSON.stringify(value);
+            }
+            return String(value);
+        }
+
+        // 渲染分页
+        function renderPagination() {
+            const pagination = document.getElementById('pagination');
+            if (totalPages <= 1) {
+                pagination.innerHTML = '';
+                return;
+            }
+            
+            let html = '';
+            
+            // 上一页
+            html += `<li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
+                <a class="page-link" href="#" onclick="changePage(${currentPage - 1}); return false;">上一页</a>
+            </li>`;
+            
+            // 页码
+            const startPage = Math.max(1, currentPage - 2);
+            const endPage = Math.min(totalPages, currentPage + 2);
+            
+            if (startPage > 1) {
+                html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(1); return false;">1</a></li>`;
+                if (startPage > 2) {
+                    html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+                }
+            }
+            
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<li class="page-item ${i === currentPage ? 'active' : ''}">
+                    <a class="page-link" href="#" onclick="changePage(${i}); return false;">${i}</a>
+                </li>`;
+            }
+            
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+                }
+                html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${totalPages}); return false;">${totalPages}</a></li>`;
+            }
+            
+            // 下一页
+            html += `<li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
+                <a class="page-link" href="#" onclick="changePage(${currentPage + 1}); return false;">下一页</a>
+            </li>`;
+            
+            pagination.innerHTML = html;
+        }
+
+        // 切换页码
+        function changePage(page) {
+            if (page < 1 || page > totalPages || page === currentPage) return;
+            currentPage = page;
+            loadTableData();
+        }
+
+        // 显示/隐藏加载动画
+        function showLoading(show) {
+            document.getElementById('loadingOverlay').style.display = show ? 'flex' : 'none';
+        }
+
+        // 显示Toast
+        function showToast(message, type = 'info') {
+            const toastBody = document.getElementById('toastBody');
+            const toastHeader = document.querySelector('#toast .toast-header');
+            
+            toastBody.textContent = message;
+            
+            toastHeader.className = 'toast-header';
+            if (type === 'success') {
+                toastHeader.classList.add('bg-success', 'text-white');
+            } else if (type === 'danger') {
+                toastHeader.classList.add('bg-danger', 'text-white');
+            } else if (type === 'info') {
+                toastHeader.classList.add('bg-info', 'text-white');
+            }
+            
+            toast.show();
+        }
+    </script>
+</body>
+</html>
+

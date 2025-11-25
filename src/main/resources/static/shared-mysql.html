@@ -66,6 +66,11 @@
             <span class="navbar-text text-white">
                 <i class="bi bi-database"></i> 共享MySQL数据库管理
             </span>
+            <div class="ms-auto">
+                <a href="mysql-viewer.html" class="btn btn-light btn-sm">
+                    <i class="bi bi-eye"></i> 数据查看
+                </a>
+            </div>
         </div>
     </nav>
 
@@ -167,91 +172,6 @@
                 </div>
             </div>
         </div>
-
-        <!-- 创建逻辑说明 -->
-        <div class="card mt-4">
-            <div class="card-header bg-white">
-                <h5 class="mb-0"><i class="bi bi-book"></i> 创建逻辑说明</h5>
-            </div>
-            <div class="card-body">
-                <h6>1. 检查阶段</h6>
-                <p>系统首先检查共享MySQL容器是否存在：</p>
-                <ul>
-                    <li>如果容器不存在 → 进入创建流程</li>
-                    <li>如果容器存在但已停止 → 启动容器</li>
-                    <li>如果容器正在运行 → 验证MySQL服务是否就绪</li>
-                </ul>
-
-                <h6 class="mt-4">2. 创建流程</h6>
-                <p>当需要创建新容器时，系统执行以下步骤：</p>
-                <ol>
-                    <li><strong>创建网络</strong>：创建名为 <code>shared-mysql-net</code> 的Docker网络（如果不存在）</li>
-                    <li><strong>创建容器</strong>：使用 <code>docker run</code> 命令创建独立容器
-                        <ul>
-                            <li>容器名称：<code>shared-mysql</code></li>
-                            <li>镜像：<code>mysql:8.0</code></li>
-                            <li>网络：连接到 <code>shared-mysql-net</code></li>
-                            <li>Volume：<code>shared-mysql-data:/var/lib/mysql</code>（持久化数据）</li>
-                            <li>重启策略：<code>unless-stopped</code>（自动重启）</li>
-                            <li>不映射端口到主机（通过Docker网络访问）</li>
-                        </ul>
-                    </li>
-                    <li><strong>等待就绪</strong>：等待MySQL服务启动完成（最多30秒）</li>
-                </ol>
-
-                <h6 class="mt-4">3. 配置特点</h6>
-                <ul>
-                    <li><strong>独立管理</strong>：容器不在任何docker-compose项目中，生命周期独立</li>
-                    <li><strong>数据持久化</strong>：使用命名volume <code>shared-mysql-data</code> 存储数据</li>
-                    <li><strong>网络隔离</strong>：使用专用网络，应用容器通过Docker网络连接</li>
-                    <li><strong>自动重启</strong>：容器异常退出时自动重启</li>
-                    <li><strong>字符集</strong>：UTF8MB4，支持emoji等特殊字符</li>
-                </ul>
-
-                <h6 class="mt-4">4. 触发时机与生命周期管理</h6>
-                <p><strong>重要变更</strong>：共享MySQL容器的生命周期现在独立管理，不再由环境创建流程自动控制。</p>
-                <ul>
-                    <li><strong>环境创建时</strong>：
-                        <ul>
-                            <li>只检查数据库容器是否可用（<code>checkSharedMysqlAvailable()</code>）</li>
-                            <li>如果容器不存在，会返回明确的错误提示，引导用户手动创建</li>
-                            <li>如果配置了 <code>shared.mysql.auto-create=true</code>，会在检查失败时尝试自动创建（不推荐）</li>
-                        </ul>
-                    </li>
-                    <li><strong>手动管理</strong>：
-                        <ul>
-                            <li>通过本页面"确保运行"按钮创建或启动</li>
-                            <li>通过 API 调用 <code>POST /api/shared-mysql/ensure</code></li>
-                        </ul>
-                    </li>
-                    <li><strong>数据库Schema</strong>：
-                        <ul>
-                            <li>具体的数据库（如 <code>test_db</code>）仍然会在环境创建时自动创建</li>
-                            <li>这是环境相关的数据，可以自动管理</li>
-                        </ul>
-                    </li>
-                </ul>
-
-                <div class="alert alert-warning mt-4">
-                    <i class="bi bi-exclamation-triangle"></i> <strong>生命周期管理</strong>：
-                    <ul class="mb-0 mt-2">
-                        <li>共享数据库容器应该通过本页面或API独立管理，不建议在环境创建时自动创建</li>
-                        <li>默认配置 <code>shared.mysql.auto-create=false</code>，需要手动创建数据库容器</li>
-                        <li>删除普通环境时，共享数据库的volume不会被删除（独立管理）</li>
-                        <li>只有通过"完全删除"操作才会删除共享数据库的所有数据</li>
-                    </ul>
-                </div>
-                
-                <div class="alert alert-info mt-3">
-                    <i class="bi bi-info-circle"></i> <strong>配置说明</strong>：
-                    如需启用自动创建（不推荐），可在 <code>application.yml</code> 中设置：
-                    <pre class="bg-light p-2 mt-2"><code>shared:
-  mysql:
-    auto-create: true</code></pre>
-                </div>
-            </div>
-        </div>
-    </div>
 
     <!-- Toast 通知 -->
     <div class="toast-container">
